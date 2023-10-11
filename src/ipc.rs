@@ -1,5 +1,6 @@
 pub mod i3_ipc {
     use byteorder::{LittleEndian, ReadBytesExt};
+    use pretty_hex;
     use serde::{Deserialize, Serialize};
     use std::env;
     use std::io;
@@ -53,10 +54,16 @@ pub mod i3_ipc {
         parse_error: bool,
     }
 
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct SubscribeResponse {
+        success: bool,
+    }
+
     #[derive(Debug)]
     pub enum Response {
         RunCommand(Vec<CommandResponse>),
         GetWorkspace(Vec<WorkspaceResponse>),
+        Subscribe(SubscribeResponse),
         None,
     }
 
@@ -133,7 +140,7 @@ pub mod i3_ipc {
             message_type: Message,
             payload: &str,
         ) -> io::Result<Response>;
-        fn subscribe(&mut self, events: Vec<Event>) -> String;
+        fn subscribe(&mut self, events: Vec<Event>) -> io::Result<Response>;
     }
 
     impl Command for UnixStream {
@@ -171,20 +178,25 @@ pub mod i3_ipc {
             message_type: Message,
             payload: &str,
         ) -> io::Result<Response> {
-            let message = self.send_i3_command(message_type, payload);
+            let _sent_message = self.send_i3_command(message_type, payload)?;
+            println!("Sent message:\n{}", pretty_hex::pretty_hex(&_sent_message));
             let (recv_message_type, recv_message) = self.recv_i3_command()?;
             let response = String::from_utf8_lossy(&recv_message);
+            println!("String response: {}", response);
             response_to_json(recv_message_type, &response)
         }
 
-        fn subscribe(&mut self, events: Vec<Event>) -> String {
-            let event_strings: Vec<String> = events
-                .iter()
-                .map(|event| format!("\"{}\"", event.as_str()))
-                .collect();
-            let payload = format!("[{}]", event_strings.join(", "));
-            payload
-            // self.send_i3_command(Message::Subscribe, )
+        fn subscribe(&mut self, events: Vec<Event>) -> io::Result<Response> {
+            let payload = format!(
+                "[{}]",
+                events
+                    .iter()
+                    .map(|event| format!("\"{}\"", event.as_str()))
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            );
+            let subscribe_response = self.send_and_recv_command(Message::Subscribe, &payload)?;
+            Ok(subscribe_response)
         }
     }
 
@@ -206,6 +218,11 @@ pub mod i3_ipc {
             Message::GetWorkspace => {
                 let response_json: Vec<WorkspaceResponse> = serde_json::from_str(&response)?;
                 Ok(Response::GetWorkspace(response_json))
+            }
+            // FIX: Not parsing: "invalid type: map, expected a sequence"
+            Message::Subscribe => {
+                let response_json: SubscribeResponse = serde_json::from_str(&response)?;
+                Ok(Response::Subscribe(response_json))
             }
             _ => Ok(Response::None),
         }
